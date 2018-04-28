@@ -33,7 +33,9 @@ bot.on('guildCreate', guild => {
         }
     }).catch(() => {
         sql.run('CREATE TABLE IF NOT EXISTS guilds (id TEXT, mainWiki TEXT, broadcastChannel TEXT)').then(() => {
-            sql.run('INSERT INTO guilds (id) VALUES (?)', [guild.id]);
+            sql.run('CREATE TABLE IF NOT EXISTS overrides (guildID TEXT, channelID TEXT, wiki TEXT)').then(() => {
+                sql.run('INSERT INTO guilds (id) VALUES (?)', [guild.id]);
+            });
         });
     });
 });
