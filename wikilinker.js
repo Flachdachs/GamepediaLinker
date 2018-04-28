@@ -79,7 +79,7 @@ bot.on('message', (msg) => {
 						const unique = new Set(allLinks);
 
 						unique.forEach((item) => {
-							mps.push(reqAPI(wiki, item.trim()).catch(console.error));
+							mps.push(reqAPI(wiki, item.replace(/@/g, '').trim()).catch(console.error));
 						});
 					}
 
@@ -89,7 +89,7 @@ bot.on('message', (msg) => {
 						const unique = new Set(allLinks);
 
 						unique.forEach((item) => {
-							mps.push(reqAPI(wiki, `Template:${item.trim()}`).catch(console.error));
+							mps.push(reqAPI(wiki, `Template:${item.replace(/@/g, '').trim()}`).catch(console.error));
 						});
 					}
 
@@ -99,7 +99,7 @@ bot.on('message', (msg) => {
 						const unique = new Set(allLinks);
 
 						unique.forEach((item) => {
-							mps.push(`<http://${wiki}.wikia.com/wiki/${item.trim().replace(/\s/g, '_')}>`);
+							mps.push(`<https://${wiki}.gamepedia.com/${item.trim().replace(/\s/g, '_')}>`);
 						});
 					}
 
@@ -270,12 +270,16 @@ const commands = {
 const reqAPI = (wiki, requestname) => new Promise((resolve, reject) => {
 	request({
 		method: 'GET',
-		uri: `http://${wiki}.wikia.com/api/v1/Search/List/?query=${requestname}&limit=1`,
+		uri: `https://${wiki}.gamepedia.com/api.php?action=opensearch&format=json&redirects=resolve&search=${requestname}&limit=1`,
 		json: true
 	}, (error, response, body) => {
 		if (!error && response.statusCode === 200) {
-			console.log(`First item: ${body.items[0].title}`);
-			return resolve(`<${body.items[0].url}>`);
+                console.log('Search:', body);
+            if (body[1].length) {
+                return resolve(`${body[1][0]} <${body[3][0]}>`);
+            } else {
+                return reject(`Nothing found for: ${body[0]}`);
+            }
 		} else if (error) {
 			return reject(`Error: ${error}`);
 		} else {
