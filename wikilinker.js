@@ -2,9 +2,27 @@ const Discord = require('discord.js');
 const bot = new Discord.Client();
 const request = require('request');
 const config = require('./config.json');
+const querystring = require('querystring');
+const util = require('util');
 
 const sql = require('sqlite');
 sql.open('./db.sqlite');
+
+const wikiUrlFormat = 'https://%s.gamepedia.com/%s';
+const wikiApiUrlFormat = 'https://%s.gamepedia.com/api.php?%s';
+const helpUrl = 'https://github.com/Flachdachs/GamepediaLinker';
+
+// Ensure that the patterns of one group don't interfere with the other group
+const pageLinkPatterns = [
+    /\[\[([^\]|]+)(?:[^\]]+)?\]\]/g,
+    /--([^|\[\]]+?)--/g,
+    /—([^|\[\]]+?)—/g
+];
+const rawLinkPatterns = [
+    /--\[([^|]+?)\]--/g
+];
+
+const debug = false;
 
 let trulyReady = false;
 
@@ -41,7 +59,9 @@ bot.on('guildCreate', guild => {
 });
 
 bot.on('message', (msg) => {
-    if (msg.author.bot || !msg.guild || !trulyReady) return;
+    if (msg.author.bot || !msg.guild || !trulyReady) {
+        return;
+    }
 
     if (msg.content.startsWith(config.prefix)) {
         const args = msg.content.slice(config.prefix.length).split(/ (.+)/);
@@ -49,20 +69,28 @@ bot.on('message', (msg) => {
         if (commands.hasOwnProperty(command)) {
             commands[command](msg, args);
         }
-    } else if (/\[\[([^\]|]+)(?:|[^\]]+)?\]\]/g.test(msg.cleanContent) || /\{\{([^}|]+)(?:|[^}]+)?\}\}/g.test(msg.cleanContent) || /--([^|]+?)--/g.test(msg.cleanContent)) {
+        return;
+    }
+
+    const removeCodeBlocks = msg.cleanContent.replace(/```[\S\s]*?```/gm, '');
+    const removeInlineCode = removeCodeBlocks.replace(/`[\S\s]*?`/gm, '');
+    const cleaned = removeInlineCode.replace(/\u200B/g, '');
+
+    if (pageLinkPatterns.some(pattern => pattern.test(cleaned)) ||
+        rawLinkPatterns.some(pattern => pattern.test(cleaned))) {
         // eslint-disable-next-line consistent-return
-        sql.get(`SELECT * FROM guilds WHERE id="${msg.guild.id}"`).then(row => {
+        sql.get('SELECT * FROM guilds WHERE id=?', msg.guild.id).then(row => {
             if (!row.mainWiki) {
                 return msg.channel.send([
                     'This server has not set a default wiki yet.',
-                    'Users with the "Administrator" permission can do this using wl~swiki <wikiname>.'
+                    `Users with the "Administrator" permission can do this using ${config.prefix}swiki <wikiname>.`
                 ]);
             }
 
-            sql.get(`SELECT mainWiki FROM guilds WHERE id="${msg.guild.id}"`).then(lowrow => {
+            sql.get('SELECT mainWiki FROM guilds WHERE id=?', msg.guild.id).then(lowrow => {
                 let wiki = lowrow.mainWiki;
 
-                sql.all(`SELECT * FROM overrides WHERE guildID="${msg.guild.id}"`).then(rows => {
+                sql.all('SELECT * FROM overrides WHERE guildID=?', msg.guild.id).then(rows => {
                     if (rows.length !== 0) {
                         for (let i = 0; i < rows.length; i++) {
                             if (rows[i].channelID === msg.channel.id) {
@@ -70,44 +98,43 @@ bot.on('message', (msg) => {
                             }
                         }
                     }
+                    console.log(`Request for: ${cleaned}, wiki: ${wiki}`);
+
                     const mps = ['**Wiki links detected:**'];
-                    const removeCodeblocks = msg.cleanContent.replace(/`{3}[\S\s]*?`{3}/gm, '');
-                    const removeInlineCode = removeCodeblocks.replace(/`[\S\s]*?`/gm, '');
-                    const cleaned = removeInlineCode.replace(/\u200B/g, '');
 
-                    if (/\[\[([^\]|]+)(?:|[^\]]+)?\]\]/g.test(cleaned)) {
-                        const name = cleaned.replace(/.*?\[\[([^\]|]+)(?:|[^\]]+)?\]\]/g, '$1\u200B');
-                        const allLinks = name.split('\u200B').slice(0, -1);
-                        const unique = new Set(allLinks);
+                    let allMatches = [];
+                    pageLinkPatterns.forEach(pattern => {
+                        pattern.lastIndex = 0; // reset the stateful pattern
+                        const matches = pattern.execAll(cleaned).map(m => m[1].trim());
+                        allMatches.push(...matches);
+                    });
+                    if (allMatches.length) {
+                        const unique = new Set(allMatches);
 
                         unique.forEach((item) => {
-                            mps.push(reqAPI(wiki, item.replace(/@/g, '').trim()).catch(console.error));
+                            console.log(`Search for: ${item}`);
+                            mps.push(reqAPI(wiki, item).catch(console.error));
                         });
                     }
 
-                    if (/\{\{([^}|]+)(?:|[^}]+)?\}\}/g.test(cleaned)) {
-                        const name = cleaned.replace(/.*?\{\{([^}|]+)(?:|[^}]+)?\}\}/g, '$1\u200B');
-                        const allLinks = name.split('\u200B').slice(0, -1);
-                        const unique = new Set(allLinks);
+                    allMatches = [];
+                    rawLinkPatterns.forEach(pattern => {
+                        pattern.lastIndex = 0; // reset the stateful pattern
+                        const matches = pattern.execAll(cleaned).map(m => m[1].replace(/\s/g, '_').trim());
+                        allMatches.push(...matches);
+                    });
+                    if (allMatches.length) {
+                        const unique = new Set(allMatches);
 
                         unique.forEach((item) => {
-                            mps.push(reqAPI(wiki, `Template:${item.replace(/@/g, '').trim()}`).catch(console.error));
-                        });
-                    }
-
-                    if (/--([^|]+?)--/g.test(cleaned)) {
-                        const name = cleaned.replace(/.*?--([^|]+?)--/g, '$1\u200B').replace(/.*(?:\n|\r)/g, '');
-                        const allLinks = name.split('\u200B').slice(0, -1);
-                        const unique = new Set(allLinks);
-
-                        unique.forEach((item) => {
-                            mps.push(`<https://${wiki}.gamepedia.com/${item.trim().replace(/\s/g, '_')}>`);
+                            console.log(`Raw link for: ${item}`);
+                            mps.push(`<${util.format(wikiUrlFormat, encodeURIComponent(wiki), encodeURIComponent(item))}>`);
                         });
                     }
 
                     Promise.all(mps)
                         .then(preparedSend => {
-                            preparedSend = preparedSend.filter(item => item !== undefined);
+                            preparedSend = preparedSend.filter(item => item);
                             if (preparedSend.length > 1) {
                                 console.log('Sending message...');
                                 msg.channel.send(preparedSend);
@@ -139,7 +166,7 @@ const sentByAnyAdmin = (msg) => {
 
 const commands = {
     help: (msg) => {
-        msg.channel.send('Syntax and commands: <http://thepsionic.com/bots/wikialinker/>');
+        msg.channel.send(`Syntax and commands: <${helpUrl}>`);
     },
     restart: (msg) => {
         if (!sentByBotAdmin(msg)) {
@@ -173,9 +200,9 @@ const commands = {
             msg.reply('You are not allowed to change the default wiki of this server.');
         } else {
             wiki = wiki.split(' ')[0];
-            sql.get(`SELECT * FROM guilds WHERE id=${msg.guild.id}`).then(row => {
+            sql.get('SELECT * FROM guilds WHERE id=?', msg.guild.id).then(row => {
                 if (!row) {
-                    sql.run('INSERT INTO guilds (mainWiki) VALUES (?)', [wiki]).then(() =>
+                    sql.run('INSERT INTO guilds (mainWiki) VALUES (?)', wiki).then(() =>
                         msg.reply(`Wiki is now set to: ${wiki}`)
                     ).catch(() => msg.reply('Database error - please contact the developer!'));
                 } else {
@@ -193,7 +220,7 @@ const commands = {
         } else {
             console.log(wiki);
             wiki = wiki.split(' ')[0];
-            sql.get(`SELECT * FROM overrides WHERE guildID="${msg.guild.id}" AND channelID="${msg.channel.id}"`).then(row => {
+            sql.get('SELECT * FROM overrides WHERE guildID=? AND channelID=?', [msg.guild.id, msg.channel.id]).then(row => {
                 if (row) {
                     sql.run('UPDATE overrides SET wiki=? WHERE guildID=? AND channelID=?', [wiki, msg.guild.id, msg.channel.id]);
                 } else {
@@ -218,7 +245,7 @@ const commands = {
                 channel = msg.mentions.channels.first();
             }
             console.log(`Channel is ${channel.name}`);
-            sql.get(`SELECT * FROM guilds WHERE id="${msg.guild.id}"`).then(row => {
+            sql.get('SELECT * FROM guilds WHERE id=?', msg.guild.id).then(row => {
                 console.log(row);
                 if (row) {
                     sql.run('UPDATE guilds SET broadcastChannel=? WHERE id=?', [channel.id, msg.guild.id]).then(() =>
@@ -235,7 +262,7 @@ const commands = {
             // do nothing
 
         } else {
-            sql.get(`SELECT * FROM guilds WHERE id="${msg.guild.id}"`).then(row => {
+            sql.get('SELECT * FROM guilds WHERE id=?', msg.guild.id).then(row => {
                 let totalMessage = `\`\`\`\nInfo for server: ${msg.guild.name}`;
                 if (!row.broadcastChannel) {
                     totalMessage += '\nNo broadcast channel set';
@@ -251,7 +278,7 @@ const commands = {
                     totalMessage += `\nMain wiki: ${row.mainWiki}`;
                 }
 
-                sql.all(`SELECT * FROM overrides WHERE guildID="${msg.guild.id}"`).then(rows => {
+                sql.all('SELECT * FROM overrides WHERE guildID=?', msg.guild.id).then(rows => {
                     if (rows.length === 0) {
                         totalMessage += '\nNo channel overrides set';
                     } else {
@@ -269,39 +296,42 @@ const commands = {
     }
 };
 
-const reqAPI = (wiki, requestname) => new Promise((resolve, reject) => {
-    request({
+const reqAPI = (wiki, requestName) => new Promise((resolve, reject) => {
+    const qs = querystring.stringify({
+        action: 'opensearch',
+        format: 'json',
+        redirects: 'resolve',
+        search: requestName,
+        limit: 1
+    });
+    const requestOptions = {
         method: 'GET',
-        uri: `https://${wiki}.gamepedia.com/api.php?action=opensearch&format=json&redirects=resolve&search=${requestname}&limit=1`,
+        uri: util.format(wikiApiUrlFormat, encodeURIComponent(wiki), qs),
         json: true
-    }, (error, response, body) => {
+    };
+    if (debug) console.log(requestOptions);
+    request(requestOptions, (error, response, body) => {
         if (!error && response.statusCode === 200) {
-            console.log('Search:', body);
+            console.log('Search: ', JSON.stringify(body).replace('\n', ''));
             if (body[1].length) {
                 return resolve(`${body[1][0]} <${body[3][0]}>`);
-            } else {
-                return reject(`Nothing found for: ${body[0]}`);
             }
-        } else if (error) {
-            return reject(`Error: ${error}`);
-        } else {
-            return reject(`Response code: ${response.statusCode}`);
+            return reject(`Nothing found for: ${body[0]}`);
         }
+        return error ? reject(`Error: ${error}`) : reject(`Response code: ${response.statusCode}`);
     });
 });
 
 const defaultChannel = (guild) => new Promise((resolve, reject) => {
-    guild.channels.forEach((value, key, map) => {
+    guild.channels.forEach((value) => {
         if (value.name === 'general') {
             return resolve(value);
         }
     });
-    let alt = guild.channels.filter((channel) => channel.type === 'text' && channel.permissionsFor(bot.user).has('SEND_MESSAGES')).first();
-    if (alt) {
-        return resolve(alt);
-    } else {
-        return reject('No applicable channel found.');
-    }
+    let alt = guild.channels
+        .filter((channel) => channel.type === 'text' && channel.permissionsFor(bot.user).has('SEND_MESSAGES'))
+        .first();
+    return alt ? resolve(alt) : reject('No applicable channel found.');
 });
 
 if (config.admin_snowflake === '') {
@@ -311,4 +341,15 @@ if (config.admin_snowflake === '') {
     bot.login(config.token);
 }
 
-process.on('unhandledRejection', re => console.log(re));
+process.on('unhandledRejection', re => console.error(re));
+
+RegExp.prototype.execAllGen = function*(input) {
+    if (!this.flags.includes('g')) {
+        throw 'Can only process patterns with modifier g set.'
+    }
+    for (let match; (match = this.exec(input)) !== null;)
+        yield match;
+};
+RegExp.prototype.execAll = function(input) {
+    return Array.from(this.execAllGen(input));
+};

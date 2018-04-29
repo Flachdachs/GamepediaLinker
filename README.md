@@ -2,14 +2,18 @@
 A configurable Discord bot for linking wiki articles from any Gamepedia-based community.
 
 # Syntax
-`[[<article name>]]` -> `http://xxx.gamepedia.com/<article_name>`
+`[[<article name>]]` or
+`--<article name>--` -> starts a search and links the first article found 
+as `http://xxx.gamepedia.com/<found_article_name>`
 
-`{{<template name>}}` -> `http://xxx.gamepedia.com/Template:<template_name>`
+e.g. --thing-- gives `http://xxx.gamepedia.com/Thing` 
 
-`--<raw article>--` -> `http://xxx.gamepedia.com/<raw_article>` (bypasses Gamepedia API)
+`--[<raw article>]--` -> just creates a link without search like `http://xxx.gamepedia.com/<raw_article>`
+
+e.g. --(thing)-- gives `http://xxx.gamepedia.com/thing` 
 
 ## Other commands
-`gl~help` - Links to this README.
+`gl~help` - Link to this README.
 
 `gl~sinfo` - Shows info about the configuration of the bot on the server.
 
