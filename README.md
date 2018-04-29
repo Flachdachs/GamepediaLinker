@@ -10,7 +10,7 @@ e.g. --thing-- gives `http://xxx.gamepedia.com/Thing`
 
 `--[<raw article>]--` -> just creates a link without search like `http://xxx.gamepedia.com/<raw_article>`
 
-e.g. --(thing)-- gives `http://xxx.gamepedia.com/thing` 
+e.g. --[thing]-- gives `http://xxx.gamepedia.com/thing` 
 
 ## Other commands
 `gl~help` - Link to this README.
